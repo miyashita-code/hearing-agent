@@ -1,0 +1,3 @@
+MODEL = "gpt-4o-mini-2024-07-18"
+#MODEL="gpt-3.5-turbo-1106"
+MAX_TOKEN_WINDOW = 10000

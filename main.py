@@ -1,7 +1,7 @@
 import asyncio
-from fastapi import FastAPI
-from fastapi_socketio import SocketManager
-from autogpt_modules.communication import WebSocketManager
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
+from autogpt_modules.communication import WebSocketManager, RoomManager
 from autogpt_modules.core import AutoGPT
 from autogpt_modules.tools import (
     ReplyMessage,
@@ -16,15 +16,47 @@ from langchain_openai import ChatOpenAI
 from autogpt_modules.core.custom_congif import MODEL
 from hearing_module.goals import hearing_goals
 from utils import dict_to_string
+import logging
+import json
+import traceback
+
+# ロギングの設定を強化
+logging.basicConfig(
+    level=logging.DEBUG,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
+
+# OpenAI関連のログを WARNING レベルに設定
+logging.getLogger("openai").setLevel(logging.WARNING)
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("httpcore").setLevel(logging.WARNING)
+
+logger = logging.getLogger(__name__)
+
 app = FastAPI()
-# Socket.IOマネージャーの設定を追加
-sio = SocketManager(app=app, mount_location='', socketio_path='socket.io')
+# CORS設定
+origins = [
+    "http://localhost:3000",
+    "http://127.0.0.1:3000",
+    "http://localhost:5173",  # Reactアプリのデフォルトポート
+    "http://127.0.0.1:5173",
+    "http://localhost:5000",
+]
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=origins,
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
 websocket_manager = WebSocketManager()
-websocket_manager.set_socketio(sio)  # Socket.IOインスタンスを設定
+room_manager = RoomManager()
 
 def create_autogpt_instance(room):
     """AutoGPTインスタンスを作成"""
-    llm = ChatOpenAI(temperature=0, model=MODEL).bind(
+    llm = ChatOpenAI(temperature=0, model=MODEL, streaming=True).bind(
         response_format={"type": "json_object"}
     )
 
@@ -53,42 +85,90 @@ def create_autogpt_instance(room):
         llm=llm,
         get_chat_history=room.message_manager.get_chat_history,
         get_event_history=room.event_manager.get_event_history,
-        verbose=False,
+        verbose=True,
         event_manager=room.event_manager,
-        message_manager=room.message_manager
+        message_manager=room.message_manager,
+        websocket_manager=websocket_manager,
+        room_manager=room_manager
     )
 
-@sio.on('connect')
-async def handle_connect(sid, environ, auth):
-    user_id = environ['HTTP_USER_ID']
-    room = websocket_manager.get_or_create_room(user_id)
-    room.sid = sid
-    await sio.enter_room(sid, room.id)
-    room.autogpt = create_autogpt_instance(room)
-    print(f"Client connected: {user_id} (Room: {room.id})")
+# 起動時のイベントハンドラ
+@app.on_event("startup")
+async def startup_event():
+    print("Starting up...")
 
-    # AutoGPTを実行
-    asyncio.create_task(room.autogpt.run(
-        goals=[dict_to_string(goal_dict) for goal_dict in hearing_goals["plan_details"]],
-        common_rule=dict_to_string(hearing_goals["common_rules"])
-    ))
+# 終了時のイベントハンドラ
+@app.on_event("shutdown")
+async def shutdown_event():
+    print("Shutting down...")
+    room_manager.cleanup_inactive_rooms()
 
-@sio.on('message')
-async def handle_message(sid, data):
-    room = websocket_manager.get_room_by_sid(sid)
-    if room:
-        # ユーザーからのメッセージを追加（message_historyへの追加）
-        await room.message_manager.add_message(data, "user")
-        await room.event_manager.add_event("new_message_come", result=data)
+# WebSocketエンドポイント
+@app.websocket("/ws/{user_id}")
+async def websocket_endpoint(websocket: WebSocket, user_id: str):
+    try:
+        logger.info(f"WebSocket connection attempt from user_id: {user_id}")
+        logger.debug(f"WebSocket headers: {websocket.headers}")
+        logger.debug(f"WebSocket query params: {websocket.query_params}")
+        
+        room = await websocket_manager.connect(websocket, user_id)
+        logger.info(f"WebSocket connected successfully for user_id: {user_id}")
+        
+        room.autogpt = create_autogpt_instance(room)
+        logger.debug(f"AutoGPT instance created for room: {room.id}")
 
+        while True:
+            try:
+                message = await websocket.receive_text()
+                data = json.loads(message)
+                logger.debug(f"Received message: {data}")
 
-@sio.on('disconnect')
-async def handle_disconnect(sid):
-    room = websocket_manager.get_room_by_sid(sid)
-    if room:
-        await websocket_manager.on_disconnect(room.id)
-        print("connection closed")
+                if data["type"] == "start_hearing":
+                    logger.info(f"Starting hearing session for user: {user_id}")
+                    asyncio.create_task(room.autogpt.run(
+                        goals=[dict_to_string(goal_dict) for goal_dict in hearing_goals["plan_details"]],
+                        common_rule=dict_to_string(hearing_goals["common_rules"]),
+                        room_id=room.id,
+                    ))
+                elif data["type"] == "message":
+                    logger.debug(f"Processing message from user {user_id}: {data['data']['content']}")
+                    await room.message_manager.add_message(data["data"]["content"], "user")
+                    await room.event_manager.add_event("new_message_come", result=data["data"]["content"])
+                elif data["type"] == "stamp":
+                    logger.debug(f"Processing stamp - Package ID: {data['data']['package_id']}, Sticker ID: {data['data']['sticker_id']}")
+                elif data["type"] == "finish":
+                    logger.info(f"Finishing session for user: {user_id}")
+
+                    room.autogpt.finish()
+                    room.event_manager.add_event("finish_session", result="finish")
+
+                    break
+
+            except json.JSONDecodeError as e:
+                logger.error(f"JSON decode error: {e}")
+                await websocket.send_text(json.dumps({
+                    "error": "Invalid JSON format",
+                    "details": str(e)
+                }))
+            except WebSocketDisconnect as e:
+                logger.error(f"WebSocketDisconnect: code={e.code}, reason={e.reason}")
+                return
+            except Exception as e:
+                logger.error(f"Error processing message: {e}")
+                try:
+                    await websocket.send_text(json.dumps({
+                        "error": "Error processing message",
+                        "details": str(e)
+                    }))
+                except RuntimeError:
+                    pass
+
+    except Exception as outer_e:
+        logger.error(f"Critical error in WebSocket connection: {outer_e}")
+        traceback.print_exc()
+    finally:
+        logger.info("WebSocket cleanup")
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    uvicorn.run(app, host="0.0.0.0", port=8000, ws="websockets")

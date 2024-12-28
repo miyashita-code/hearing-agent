@@ -88,9 +88,13 @@ class Wait(BaseWebSocketTool):
                     self._waiting = False
                     print("BREAK WAIT due to new_message_come event")
                     return f"{elapsed_time/60:.1f}分経過。new_message_comeイベントにより待機を終了しました。"
+                
+                if ev.get('action') == 'finish_session':
+                    # セッション終了イベントが確認されたため待機終了
+                    self._waiting = False
+                    print("BREAK WAIT due to finish_session event")
+                    return f"{elapsed_time/60:.1f}分経過。finish_sessionイベントにより待機を終了しました。"
 
-            # 上記forループ内で見つからなければ、そのまま待機継続
-            # 待機終了判定はループ条件に依存するためここでは特に何もしない
 
         # ループを抜けた場合は、待機時間終了または_waitingがFalseになった状態
         self._waiting = False

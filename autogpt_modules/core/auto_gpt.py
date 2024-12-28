@@ -21,7 +21,7 @@ from langchain_core.runnables import RunnableSequence
 from .custom_congif import MODEL
 from .autogpt_prompt import AutoGPTPrompt
 from .event import EventManager
-from ..communication import MessageManager
+from ..communication import MessageManager, WebSocketManager, RoomManager # WebSocketManager, RoomManagerを追加
 from ..tools import (
     ReplyMessage,
     ReplyMessageWithStamp,
@@ -46,6 +46,8 @@ class AutoGPT:
         chain: Optional[RunnableSequence] = None,
         verbose: bool = True,
         event_manager: EventManager = None,
+        websocket_manager: WebSocketManager = None, # 追加
+        room_manager: RoomManager = None, # 追加
 
     ):
         self.ai_name = ai_name
@@ -57,6 +59,9 @@ class AutoGPT:
         self.verbose = verbose
         self.count = 0
         self.event_manager = event_manager
+        self.websocket_manager = websocket_manager
+        self.room_manager = room_manager
+        self.disconnect_flag = False
 
     @classmethod
     def from_llm_and_tools(
@@ -70,6 +75,8 @@ class AutoGPT:
         verbose: bool = True,
         event_manager: EventManager = None,
         message_manager: MessageManager = None,
+        websocket_manager: WebSocketManager = None, # 追加
+        room_manager: RoomManager = None, # 追加
     ) -> AutoGPT:
         """LLMとツールからAutoGPTインスタンスを作成"""
         output_parser = AutoGPTOutputParser()
@@ -98,7 +105,9 @@ class AutoGPT:
             output_parser=output_parser,
             chain=chain,
             verbose=verbose,
-            event_manager=event_manager
+            event_manager=event_manager,
+            websocket_manager=websocket_manager, # 追加
+            room_manager=room_manager, # 追加
         )
 
     async def _log(self, message: str, data: Any = None) -> None:
@@ -112,7 +121,7 @@ class AutoGPT:
                 else:
                     print(str(data))
 
-    async def _execute_tool(self, tool_name: str, args: Dict[str, Any], perpose : str) -> str:
+    async def _execute_tool(self, tool_name: str, args: Dict[str, Any], purpose: str) -> str:
         """ツールを実行"""
 
         tools = {t.name: t for t in self.tools}
@@ -126,7 +135,7 @@ class AutoGPT:
 
             await self.event_manager.add_event(
                 action="tool_execution : " + tool_name,
-                purpose=perpose,
+                purpose=purpose,
                 result=result
             )
             print(f"add_event: {result}")
@@ -135,8 +144,10 @@ class AutoGPT:
             error = f"Error: {str(e)}"
             return error
 
-    async def run(self, goals: List[str], common_rule: str = "") -> str:
+    async def run(self, goals: List[str], common_rule: str = "", room_id: str = None) -> str: # room_idを追加
         """Run the agent on a list of goals."""
+
+        self._set_disconnect_flag(False)
 
         print("\n"*50)
 
@@ -145,7 +156,7 @@ class AutoGPT:
             print(f"=== Processing Goal {i}/{len(goals)} ===")
 
 
-            result = await self._run_subtask(goals, goal, common_rule, i)
+            result = await self._run_subtask(goals, goal, common_rule, i, room_id) # room_idを追加
             if not result:
                 error = f"Failed to complete goal {i}: {goal}"
                 print(error)
@@ -162,10 +173,11 @@ class AutoGPT:
         success = "=== All goals completed successfully! ==="
         return success
 
-    async def _run_subtask(self, goals: List[str], current_goal: str, common_rule: str, goal_index: int) -> str:
+    async def _run_subtask(self, goals: List[str], current_goal: str, common_rule: str, goal_index: int, room_id: str = None) -> str: # room_idを追加
         """Run a subtask for the agent."""
+        room = self.room_manager.get_room(room_id)
         
-        while True:  # 永続的なループ
+        while not self.is_finish():  # 永続的なループ
             try:
                 print(f"=== AutoGPT Run {goal_index}-{self.count}===")
 
@@ -208,39 +220,31 @@ class AutoGPT:
                 try:
                         # assistant_reply.content は JSON文字列として返ってくるためパースが必要
                     parsed_response = json.loads(response_text)
-                    perpose = parsed_response.get("thoughts", {}).get("text", "")
+                    purpose = parsed_response.get("thoughts", {}).get("text", "")
 
                     is_finish = string_to_bool(parsed_response.get("thoughts", {}).get("is_finish", "false"))
                     is_go_next = string_to_bool(parsed_response.get("thoughts", {}).get("is_go_next", "false"))
                 except:
-                    perpose = ""
+                    purpose = ""
                     is_finish = False
                     is_go_next = False
-                    
-                # Execute action
-                if action.name == "reply_message":
-                    result = await self._execute_tool(action.name, action.args, perpose)
-                    if is_finish:
-                        result = action.args.get("response", "Task completed")
-                        await self._log("Task Completed:", result)
-                        return result
 
-                    if is_go_next:
-                        result = action.args.get("response", "Task completed")
-                        await self._log("Task Completed:", result)
-                        return "go_next"
-                else:
-                    if is_finish:
-                        result = action.args.get("response", "Task completed")
-                        await self._log("Task Completed:", result)
-                        return result
+                # Return 
+                if is_finish:
+                    result = action.args.get("response", "Task completed")
+                    await self._log("Task Completed:", result)
+                    return result
 
-                    if is_go_next:
-                        result = action.args.get("response", "Task completed")
-                        await self._log("Task Completed:", result)
-                        return "go_next"
+                if is_go_next:
+                    result = action.args.get("response", "Task completed")
+                    await self._log("Task Completed:", result)
+                    return "go_next"
                     
-                    result = await self._execute_tool(action.name, action.args, perpose)
+                print(f"[DEBUG] action.name: {action.name}")
+                print(f"[DEBUG] action.args: {action.args}")
+
+                result = await self._execute_tool(action.name, action.args, purpose)
+                print(f"[DEBUG] result: {result}")
 
                 self.add_count()
                 
@@ -261,4 +265,11 @@ class AutoGPT:
     def reset_count(self):
         self.count = 0
 
+    def _set_disconnect_flag(self, flag: bool):
+        self.disconnect_flag = flag
 
+    def finish(self):
+        self._set_disconnect_flag(True)
+
+    def is_finish(self):
+        return self.disconnect_flag

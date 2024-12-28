@@ -56,6 +56,7 @@ class AutoGPTPrompt(BaseChatPromptTemplate, BaseModel):
         response_format = self._construct_response_format()
         chat_history = self._format_list_with_order_number(self.get_chat_history() if self.get_chat_history else [], prefix="b")
         event_history = self._format_list_with_order_number(self.get_event_history() if self.get_event_history else [], prefix="a")
+        flags_format = {}#{"is_finish": "true or false, if true, you will choose finish command.", "is_go_next": "true or false, if true, you should choose go_next command.", "is_update_info": "true or false, if true, you should update info command.", "is_planning": "true or false, if true, you should choose planning command."}
 
         try:
             is_new_response_from_user_came = self.get_is_new_response_from_user_came() if self.get_is_new_response_from_user_came else False
@@ -79,7 +80,8 @@ class AutoGPTPrompt(BaseChatPromptTemplate, BaseModel):
             is_new_response_from_user_came=is_new_response_from_user_came,
             formatted_tools=formatted_tools,
             response_format=response_format,
-            consecutive_message_number=consecutive_message_number
+            consecutive_message_number=consecutive_message_number,
+            flags_format=flags_format
         )
 
         return full_prompt

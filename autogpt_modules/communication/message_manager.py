@@ -1,6 +1,6 @@
 from datetime import datetime
 from typing import List, Dict
-from ..core.event import EventManager
+from ..core.event_manager import EventManager
 
 class Message:
     def __init__(self, content: str, sender: str):

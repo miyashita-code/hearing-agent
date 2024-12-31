@@ -1,7 +1,7 @@
 import json
 from typing import Optional
 from langchain.tools.base import BaseTool
-from ..core.event import EventManager
+from ..core.event_manager import EventManager
 from ..communication import WebSocketManager, MessageManager
 from pydantic import Field, PrivateAttr
 from datetime import datetime

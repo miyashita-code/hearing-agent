@@ -1,7 +1,7 @@
 import asyncio
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from autogpt_modules.communication import WebSocketManager, RoomManager
+from autogpt_modules.communication import WebSocketManager
 from autogpt_modules.core import AutoGPT
 from autogpt_modules.tools import (
     ReplyMessage,
@@ -14,6 +14,8 @@ import os
 from datetime import datetime
 from langchain_openai import ChatOpenAI
 from autogpt_modules.core.custom_congif import MODEL
+from autogpt_modules.tools.plan_action import PlanAction
+from autogpt_modules.tools.save_result import SaveResult
 from hearing_module.goals import hearing_goals
 from utils import dict_to_string
 import logging
@@ -51,12 +53,21 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-websocket_manager = WebSocketManager()
-room_manager = RoomManager()
+websocket_manager = WebSocketManager(room_timeout=30)
 
 def create_autogpt_instance(room):
     """AutoGPTインスタンスを作成"""
-    llm = ChatOpenAI(temperature=0, model=MODEL, streaming=True).bind(
+
+    if room is None:
+        raise ValueError("Room not found")
+    
+    llm = ChatOpenAI(
+        temperature=0, 
+        model=os.getenv("BASE_MODEL"), 
+        api_key=os.getenv("DEEPSEEK_API_KEY"),
+        streaming=True,
+        base_url=os.getenv("DEEPSEEK_BASE_URL")
+    ).bind(
         response_format={"type": "json_object"}
     )
 
@@ -74,6 +85,14 @@ def create_autogpt_instance(room):
             event_manager=room.event_manager,
             room_id=room.id
         ),
+        PlanAction(
+            websocket_manager=websocket_manager,
+            room_id=room.id
+        ),
+        SaveResult(
+            websocket_manager=websocket_manager,
+            room_id=room.id
+        ),
         Finish(),
         GoNext()
     ]
@@ -82,14 +101,11 @@ def create_autogpt_instance(room):
         ai_name="認知症サポーター",
         ai_role="認知症患者の生活における意思決定支援や不安解消を行う情緒的なケアを行うエージェント",
         tools=tools,
+        flag_names=["finish", "go_next", "plan_action", "reply_message"],
         llm=llm,
-        get_chat_history=room.message_manager.get_chat_history,
-        get_event_history=room.event_manager.get_event_history,
+        room_id=room.id,
         verbose=True,
-        event_manager=room.event_manager,
-        message_manager=room.message_manager,
-        websocket_manager=websocket_manager,
-        room_manager=room_manager
+        websocket_manager=websocket_manager
     )
 
 # 起動時のイベントハンドラ
@@ -101,7 +117,7 @@ async def startup_event():
 @app.on_event("shutdown")
 async def shutdown_event():
     print("Shutting down...")
-    room_manager.cleanup_inactive_rooms()
+    websocket_manager.cleanup_inactive_rooms()
 
 # WebSocketエンドポイント
 @app.websocket("/ws/{user_id}")
@@ -113,9 +129,15 @@ async def websocket_endpoint(websocket: WebSocket, user_id: str):
         
         room = await websocket_manager.connect(websocket, user_id)
         logger.info(f"WebSocket connected successfully for user_id: {user_id}")
+        logger.debug(f"Created room with ID: {room.id}")
+        logger.debug(f"Current rooms in manager: {list(websocket_manager._rooms.keys())}")
+
+        logger.debug(f"room: {room}")
         
+        logger.debug(f"Creating AutoGPT instance for room ID: {room.id}")
         room.autogpt = create_autogpt_instance(room)
         logger.debug(f"AutoGPT instance created for room: {room.id}")
+        logger.debug(f"Rooms after AutoGPT creation: {list(websocket_manager._rooms.keys())}")
 
         while True:
             try:

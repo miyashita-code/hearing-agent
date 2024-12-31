@@ -1,8 +1,9 @@
-from typing import Optional
-from langchain.tools import BaseTool
+from ast import Dict
+from typing import Dict, Any, Optional
+
 from ..communication import WebSocketManager
-from ..core.event import EventManager
-from .decorators import websocket_tool
+from ..core.event_manager import EventManager
+
 import asyncio
 from pydantic import Field, PrivateAttr
 from .basic_tools import BaseWebSocketTool
@@ -39,6 +40,7 @@ class Wait(BaseWebSocketTool):
         super().__init__(websocket_manager=websocket_manager, room_id=room_id)
         self._event_manager = event_manager
         self._waiting = False
+        self._waiting_info: Dict[str, float] = {"consecutive_waiting_duration": 0, "prev_waiting_info": 0}
 
     async def _check_new_message(self, old_user_msg_id: str, old_user_msg_content: str) -> bool:
         """新規で異なるユーザーメッセージがあるかを判定"""
@@ -76,28 +78,35 @@ class Wait(BaseWebSocketTool):
             event_history = self._event_manager.get_event_history()
             current_events = event_history[initial_event_count:]
 
-            # デバッグ用
-            # print("EVENT NUMBER:", len(current_events))
-            # for e in current_events:
-            #     print(e)
-
             # new_message_come イベントがあるかチェック
             for ev in current_events:
                 if ev.get('action') == 'new_message_come':
                     # 新規メッセージイベントが確認されたため待機終了
                     self._waiting = False
                     print("BREAK WAIT due to new_message_come event")
+                    self._update_waiting_info(
+                        consecutive_waiting_duration=self.get_waiting_info()["consecutive_waiting_duration"] + elapsed_time/60,
+                        prev_waiting_info=elapsed_time/60
+                    )
                     return f"{elapsed_time/60:.1f}分経過。new_message_comeイベントにより待機を終了しました。"
                 
                 if ev.get('action') == 'finish_session':
                     # セッション終了イベントが確認されたため待機終了
                     self._waiting = False
                     print("BREAK WAIT due to finish_session event")
+                    self._update_waiting_info(
+                        consecutive_waiting_duration=self.get_waiting_info()["consecutive_waiting_duration"] + elapsed_time/60,
+                        prev_waiting_info=elapsed_time/60
+                    )
                     return f"{elapsed_time/60:.1f}分経過。finish_sessionイベントにより待機を終了しました。"
 
 
         # ループを抜けた場合は、待機時間終了または_waitingがFalseになった状態
         self._waiting = False
+        self._update_waiting_info(
+            consecutive_waiting_duration=self.get_waiting_info()["consecutive_waiting_duration"] + minutes,
+            prev_waiting_info=minutes
+        )
         return f"{minutes}分間の待機が完了しました。"
 
     async def _arun(self, minutes: float = 1.0) -> str:
@@ -111,8 +120,8 @@ class Wait(BaseWebSocketTool):
             wait_time = float(minutes)
             if wait_time < 0:
                 return "待機時間は0以上の値を指定してください。"
-            if wait_time > 10:  # 最大待機時間を10分に制限
-                wait_time = 10
+            if wait_time > 60:  # 最大待機時間を60分に制限
+                wait_time = 60
         except ValueError:
             return "待機時間は数値で指定してください。"
 
@@ -132,3 +141,26 @@ class Wait(BaseWebSocketTool):
 
     def _run(self, minutes: float = 1.0) -> str:
         raise NotImplementedError("このツールは非同期でのみ使用できます。") 
+    
+    def reset_waiting_info(self):
+        self._waiting_info = {"consecutive_waiting_duration": 0, "prev_waiting_info": 0}
+
+    def _update_waiting_info(
+            self, 
+            consecutive_waiting_duration: float = 0, 
+            prev_waiting_info: float = 0
+        ):
+        self._waiting_info["consecutive_waiting_duration"] = consecutive_waiting_duration
+        self._waiting_info["prev_waiting_info"] = prev_waiting_info
+
+    def get_waiting_info(self) -> 'Dict[str, float]':
+        """待機情報を取得する
+
+        Returns:
+            Dict[str, float]: 待機情報
+        """
+        return {
+            "consecutive_waiting_duration": self._waiting_info["consecutive_waiting_duration"],
+            "prev_waiting_info": self._waiting_info["prev_waiting_info"]
+        }
+

@@ -1,8 +1,8 @@
-# Hearing Agent - 認知症患者のための自律的対話支援システム
+# Hearing Agent - Re-MENTIAのための自律的対話支援システム
 
 ## 🌟 概要
 
-Hearing Agentは、認知症患者の日常生活における手続き記憶（IADL: Instrumental Activities of Daily Living）をドキュメント化し、支援するための自律的な対話システムです。AutoGPTの設計思想に基づき、**JSONで定義されたゴールに従って自律的にワークフローを実行**する革新的なアーキテクチャを採用しています。
+Hearing Agentは、認知症当事者の日常生活における手続き記憶（IADL: Instrumental Activities of Daily Living）をドキュメント化し、支援するための自律的な対話システムです。AutoGPTの設計思想に基づき、**JSONで定義されたゴールに従って自律的にワークフローを実行**する革新的なアーキテクチャを採用しています。
 
 ### 🎯 設計思想
 
@@ -83,7 +83,7 @@ hearing_goals = {
 # AutoGPTインスタンスの作成
 autogpt = AutoGPT.from_llm_and_tools(
     ai_name="認知症サポーター",
-    ai_role="認知症患者の生活支援エージェント",
+    ai_role="認知症当事者の生活支援エージェント",
     tools=[ReplyMessage(), Wait(), PlanAction(), SaveResult()],
     flag_names=["finish", "go_next", "plan_action", "reply_message"],
     llm=llm
@@ -232,8 +232,7 @@ class CustomTool:
 
 - AutoGPTプロジェクトチーム - 革新的なエージェントアーキテクチャの提供
 - LangChainコミュニティ - 強力なLLM統合フレームワーク
-- Re-MENTIAプロジェクトチーム - 認知症ケアへの深い洞察
+- Re-MENTIA
 
 ---
 
-**注意**: このシステムは認知症患者の支援を目的としていますが、医療行為の代替ではありません。専門的な医療アドバイスが必要な場合は、必ず医療従事者にご相談ください。
